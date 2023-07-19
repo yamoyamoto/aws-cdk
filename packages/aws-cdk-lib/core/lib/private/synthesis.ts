@@ -3,7 +3,7 @@ import * as path from 'path';
 import { IConstruct } from 'constructs';
 import { MetadataResource } from './metadata-resource';
 import { prepareApp } from './prepare-app';
-import { TreeMetadata } from './tree-metadata';
+import { SynthDiff, TreeMetadata } from './tree-metadata';
 import { CloudAssembly } from '../../../cx-api';
 import * as cxapi from '../../../cx-api';
 import { Annotations } from '../annotations';
@@ -306,6 +306,13 @@ function injectTreeMetadata(root: IConstruct) {
  * Stop at Assembly boundaries.
  */
 function synthesizeTree(root: IConstruct, builder: cxapi.CloudAssemblyBuilder, validateOnSynth: boolean = false) {
+  let synthDiff: SynthDiff = {
+    removed: {},
+    added: {},
+  };
+
+  const before = bar(builder.outdir);
+
   visit(root, 'post', construct => {
     const session = {
       outdir: builder.outdir,
@@ -316,12 +323,80 @@ function synthesizeTree(root: IConstruct, builder: cxapi.CloudAssemblyBuilder, v
     if (Stack.isStack(construct)) {
       construct.synthesizer.synthesize(session);
     } else if (construct instanceof TreeMetadata) {
-      construct._synthesizeTree(session);
+      synthDiff = construct._synthesizeTree(session);
     } else {
       const custom = getCustomSynthesis(construct);
       custom?.onSynthesize(session);
     }
   });
+
+  const { added, removed } = synthDiff;
+  if (Object.keys(added).length > 0 && Object.keys(removed).length > 0) {
+    const entries = Object.keys(added)
+      .filter(hash => Object.keys(removed).includes(hash))
+      .map(hash => {
+        const newPath = added[hash];
+        const oldId = before[removed[hash]];
+        return [newPath, oldId];
+      });
+    const replacement = Object.fromEntries(entries);
+
+
+
+    updateTemplates(builder.outdir, replacement);
+  }
+}
+
+function groupByType()
+
+/**
+ * Returns a map from CDK path to CFN logical ID
+ * @param outdir the cloud assembly directory
+ */
+function bar(outdir: string): Record<string, string> {
+  // TODO Use the cloud assembly API instead
+  const records = fs.readdirSync(outdir)
+    .filter(name => name.endsWith('.template.json'))
+    .map(name => JSON.parse(fs.readFileSync(path.join(outdir, name)).toString()))
+    .map(extract);
+
+  let result: Record<string, string> = {};
+  records.forEach(rec => {
+    result = { ...result, ...rec };
+  });
+
+  return result;
+
+  function extract(json: any): Record<string, string> {
+    const resources = json.Resources as Record<string, any>;
+    return Object.fromEntries(
+      Object.entries(resources).map(([id, resource]) => ([resource.Metadata['aws:cdk:path'], id]))
+    );
+  }
+}
+
+/**
+ * Updates the generated template preserving old IDs when necessary
+ * @param pathMapping A map from new path to old id
+ */
+function updateTemplates(outdir: string, pathMapping: Record<string, string>) {
+  // TODO Use the cloud assembly API instead
+  fs.readdirSync(outdir)
+    .forEach(name => {
+      const fullName = path.join(outdir, name);
+      if (name.endsWith('.template.json')) {
+        const json = JSON.parse(fs.readFileSync(fullName).toString());
+        const resources = json.Resources as Record<string, any>;
+        Object.entries(resources).forEach(([id, resource]) => {
+          const resourcePath = resource.Metadata['aws:cdk:path'];
+          if (pathMapping[resourcePath] != null) {
+            delete resources[id];
+            resources[pathMapping[resourcePath]] = resource;
+          }
+        });
+        fs.writeFileSync(fullName, JSON.stringify(json, undefined, 2));
+      }
+    });
 }
 
 interface ValidationError {
