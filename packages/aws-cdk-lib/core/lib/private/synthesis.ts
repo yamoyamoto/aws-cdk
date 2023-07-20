@@ -1,9 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { IConstruct } from 'constructs';
+import * as readlineSync from 'readline-sync';
 import { MetadataResource } from './metadata-resource';
 import { prepareApp } from './prepare-app';
-import { SynthDiff, TreeMetadata } from './tree-metadata';
+import { Node, SynthDiff, TreeMetadata } from './tree-metadata';
 import { CloudAssembly } from '../../../cx-api';
 import * as cxapi from '../../../cx-api';
 import { Annotations } from '../annotations';
@@ -311,7 +312,7 @@ function synthesizeTree(root: IConstruct, builder: cxapi.CloudAssemblyBuilder, v
     added: {},
   };
 
-  const before = bar(builder.outdir);
+  const before = pathToIdMap(builder.outdir);
 
   visit(root, 'post', construct => {
     const session = {
@@ -335,25 +336,76 @@ function synthesizeTree(root: IConstruct, builder: cxapi.CloudAssemblyBuilder, v
     const entries = Object.keys(added)
       .filter(hash => Object.keys(removed).includes(hash))
       .map(hash => {
-        const newPath = added[hash];
-        const oldId = before[removed[hash]];
-        return [newPath, oldId];
+        const addedNode = added[hash];
+        const oldId = before[removed[hash].path];
+        return [addedNode.path, oldId];
       });
     const replacement = Object.fromEntries(entries);
 
+    const symDiff = symmetricDifference(added, removed);
+    const groups = groupByType(symDiff);
 
+    Object.values(groups).forEach(set => {
+      const from = [...set].filter(x => removed[x.hash] != null);
+      const candidates = [...set].filter(x => added[x.hash] != null);
+
+      from.forEach(node => {
+        // eslint-disable-next-line no-console
+        console.log(`${node.path}:`);
+
+        // eslint-disable-next-line no-console
+        console.log('\t0. None');
+
+        if (candidates.length > 0) {
+          // eslint-disable-next-line no-console
+          console.log(candidates.map((n, idx) => `\t${idx + 1}. ${n.path}`).join('\n'));
+
+          // TODO Validate input
+          const idx = parseInt(readlineSync.question('Choose an option> '));
+
+          if (idx > 0) {
+            replacement[candidates[idx - 1].path] = before[node.path];
+          }
+        }
+      });
+    });
 
     updateTemplates(builder.outdir, replacement);
   }
 }
 
-function groupByType()
+function groupByType(nodes: Set<Node>): Record<string, Set<Node>> {
+  const result: Record<string, Set<Node>> = {};
+
+  [...nodes].forEach(node => {
+    const resourceType = node.attributes?.['aws:cdk:cloudformation:type'];
+    if (result[resourceType] == null) {
+      result[resourceType] = new Set();
+    }
+    result[resourceType].add(node);
+  });
+
+  return result;
+}
+
+function symmetricDifference(m1: Record<string, Node>, m2: Record<string, Node>): Set<Node> {
+  const result: Set<Node> = new Set();
+
+  Object.entries(m1).forEach(([hash, node]) => {
+    if (m2[hash] == null) result.add(node);
+  });
+  Object.entries(m2).forEach(([hash, node]) => {
+    if (m1[hash] == null) result.add(node);
+  });
+
+  return result;
+}
 
 /**
  * Returns a map from CDK path to CFN logical ID
  * @param outdir the cloud assembly directory
  */
-function bar(outdir: string): Record<string, string> {
+function pathToIdMap(outdir: string): Record<string, string> {
   // TODO Use the cloud assembly API instead
   const records = fs.readdirSync(outdir)
     .filter(name => name.endsWith('.template.json'))
@@ -370,7 +422,7 @@ function bar(outdir: string): Record<string, string> {
   function extract(json: any): Record<string, string> {
     const resources = json.Resources as Record<string, any>;
     return Object.fromEntries(
-      Object.entries(resources).map(([id, resource]) => ([resource.Metadata['aws:cdk:path'], id]))
+      Object.entries(resources).map(([id, resource]) => ([resource.Metadata['aws:cdk:path'], id])),
     );
   }
 }
@@ -380,7 +432,10 @@ function bar(outdir: string): Record<string, string> {
  * @param pathMapping A map from new path to old id
  */
 function updateTemplates(outdir: string, pathMapping: Record<string, string>) {
-  // TODO Use the cloud assembly API instead
+  // NOTICE A non-hacky solution would be integrated into the synth process
+  // instead of updating the template ad-hoc like this. It would also allow us
+  // to better handle the case in which overrideLogicalId() is called, in which
+  // case the whatever ID they provided should be honoured.
   fs.readdirSync(outdir)
     .forEach(name => {
       const fullName = path.join(outdir, name);

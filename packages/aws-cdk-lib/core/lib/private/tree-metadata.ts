@@ -1,8 +1,8 @@
-import * as fs from 'fs-extra';
-import * as path from 'path';
 import * as crypto from 'crypto';
+import * as path from 'path';
 
 import { Construct, IConstruct } from 'constructs';
+import * as fs from 'fs-extra';
 import { ConstructInfo, constructInfoFromConstruct } from './runtime-info';
 import { ArtifactType } from '../../../cloud-assembly-schema';
 import { Annotations } from '../annotations';
@@ -13,11 +13,11 @@ import { IInspectable, TreeInspector } from '../tree';
 const FILE_PATH = 'tree.json';
 
 /**
- * Maps from hash to path
+ * Maps from hash to Node
  */
 export interface SynthDiff {
-  readonly removed: Record<string, string>;
-  readonly added: Record<string, string>;
+  readonly removed: Record<string, Node>;
+  readonly added: Record<string, Node>;
 }
 
 /**
@@ -60,6 +60,34 @@ export class TreeMetadata extends Construct {
       });
       sortedChildrenHashes.sort();
 
+      /*
+      Computing the hash of each node. For the leaves, which correspond to CFN resources,
+      the hash is computed over a canonical version of the object (keys are
+      sorted, special data types such as Date are serialized etc). For internal
+      nodes, the hash is computed from the hashes of its children.
+
+      However, for leaf nodes, the computation is still not exactly right. A
+      resource may have reference to other resources, which means that the
+      logical ID of those resources will be part of the hash computation. So,
+      let's say you have two constructs, A and B, such that A references B. Then
+      you move both from one place to another in the construct tree. Despite not
+      changing any content, the new hash will be different, because the ID of B
+      changed and, therefore the content of A also changed.
+
+      One possible solution to this is to navigate the CFN DAG "backwards"
+      (i.e., from the nodes that don't have any reference to any other nodes, to
+      the nodes that reference them and so on). At each step, preserve the old
+      logical ID, if necessary.
+
+      Another limitation here is the fact that we are saving the state in the
+      cloud assembly, because it was easier to implement for the hackathon. But
+      the right solution is to store that state somewhere else, where the user
+      can add to version control.
+      */
+      const hash = attributes != null
+        ? computeStringHash(canonicalize(attributes))
+        : computeStringHash(sortedChildrenHashes.join());
+
       const node: Node = {
         id: construct.node.id || 'App',
         path: construct.node.path,
@@ -71,7 +99,7 @@ export class TreeMetadata extends Construct {
         } : undefined,
         children: Object.keys(childrenMap).length === 0 ? undefined : childrenMap,
         attributes: attributes,
-        hash: attributes != null ? computeStringHash(canonicalize(attributes)) : computeStringHash(sortedChildrenHashes.join()),
+        hash,
         constructInfo: constructInfoFromConstruct(construct),
       };
 
@@ -201,46 +229,36 @@ type Pair = { key: string, value: any };
 function canonicalize(obj: HashMap) {
   let pairs: Pair[] = [];
   for (const key in obj) {
-      const value = obj[key];
-      pairs.push({ key, value });
+    const value = obj[key];
+    pairs.push({ key, value });
   }
   pairs.sort((a, b) => {
-      if (a.key < b.key)
-          return -1;
-      else if (a.key > b.key)
-          return 1;
-      else
-          return 0;
+    if (a.key < b.key) {return -1;} else if (a.key > b.key) {return 1;} else {return 0;}
   });
   const members = pairs.reduce((text, pair) => {
-      if (text.length > 0)
-          text += ',';
-      text += '"' + pair.key + '":' + serialize(pair.value);
-      return text;
+    if (text.length > 0) {text += ',';}
+    text += '"' + pair.key + '":' + serialize(pair.value);
+    return text;
   }, '');
   return '{' + members + '}';
 }
 
 function serialize(value: any) {
   if (typeof(value) === 'object') {
-      if (value instanceof Date) {
-          return 'Date.parse("' + value.toISOString() + '")';
-      }
-      else if (Array.isArray(value)) {
-          const values = value.reduce((text, element) => {
-              if (text.length > 0)
-                  text += ',';
-              text += serialize(element);
-              return text;
-          }, '');
-          return '[' + values + ']';
-      }
-      else {
-          return canonicalize(value);
-      }
-  }
-  else {
-      return JSON.stringify(value);
+    if (value instanceof Date) {
+      return 'Date.parse("' + value.toISOString() + '")';
+    } else if (Array.isArray(value)) {
+      const values = value.reduce((text, element) => {
+        if (text.length > 0) {text += ',';}
+        text += serialize(element);
+        return text;
+      }, '');
+      return '[' + values + ']';
+    } else {
+      return canonicalize(value);
+    }
+  } else {
+    return JSON.stringify(value);
   }
 }
 
@@ -249,12 +267,14 @@ function computeStringHash(str: string) {
   return crypto.createHash('sha256').update(bytes).digest('base64');
 }
 
-function treeDifference(t1: Node, t2: Node): Record<string, string> {
+function treeDifference(t1: Node, t2: Node): Record<string, Node> {
   const m1 = foo(t1);
   const m2 = foo(t2);
 
-  Object.entries(m1).forEach(([hash, path]) => {
-    if (Object.values(m2).includes(path)) {
+  const m2Paths = Object.values(m2).map(n => n.path);
+
+  Object.entries(m1).forEach(([hash, node]) => {
+    if (m2Paths.includes(node.path)) {
       delete m1[hash];
     }
   });
@@ -263,16 +283,16 @@ function treeDifference(t1: Node, t2: Node): Record<string, string> {
 }
 
 /**
- * Returns a map from hash to path
+ * Returns a map from hash to Node
  */
-function foo(node: Node): Record<string, string> {
-  const result: Record<string, string> = {};
+function foo(node: Node): Record<string, Node> {
+  const result: Record<string, Node> = {};
   recur(node);
   return result;
 
   function recur(n: Node) {
     if (n.children == null || Object.keys(n.children).length === 0) {
-      result[n.hash] = n.path;
+      result[n.hash] = n;
     } else {
       Object.values(n.children ?? {}).forEach(recur);
     }

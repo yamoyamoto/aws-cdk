@@ -160,6 +160,8 @@
       "aws-cdk-lib/minimatch/**",
       "aws-cdk-lib/punycode",
       "aws-cdk-lib/punycode/**",
+      "aws-cdk-lib/readline-sync",
+      "aws-cdk-lib/readline-sync/**",
       "aws-cdk-lib/semver",
       "aws-cdk-lib/semver/**",
       "aws-cdk-lib/string-width",
