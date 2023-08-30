@@ -9,6 +9,7 @@ import { IEventSource } from './event-source';
 import { FileSystem } from './filesystem';
 import { FunctionAttributes, FunctionBase, IFunction } from './function-base';
 import { calculateFunctionHash, trimFromStart } from './function-hash';
+import { FunctionLogGroup } from './function-log-group';
 import { Handler } from './handler';
 import { LambdaInsightsVersion } from './lambda-insights';
 import { Version, VersionOptions } from './lambda-version';
@@ -310,6 +311,7 @@ export interface FunctionOptions extends EventInvokeConfigOptions {
    * this property, unsetting it doesn't remove the log retention policy. To
    * remove the retention policy, set the value to `INFINITE`.
    *
+   * @deprecated Use `logGroup` instead
    * @default logs.RetentionDays.INFINITE
    */
   readonly logRetention?: logs.RetentionDays;
@@ -318,6 +320,7 @@ export interface FunctionOptions extends EventInvokeConfigOptions {
    * The IAM role for the Lambda function associated with the custom resource
    * that sets the retention policy.
    *
+   * @deprecated Use `logGroup` instead
    * @default - A new role is created.
    */
   readonly logRetentionRole?: iam.IRole;
@@ -326,6 +329,7 @@ export interface FunctionOptions extends EventInvokeConfigOptions {
    * When log retention is specified, a custom resource attempts to create the CloudWatch log group.
    * These options control the retry policy when interacting with CloudWatch APIs.
    *
+   * @deprecated Use `logGroup` instead
    * @default - Default AWS SDK retry options.
    */
   readonly logRetentionRetryOptions?: LogRetentionRetryOptions;
@@ -385,6 +389,13 @@ export interface FunctionOptions extends EventInvokeConfigOptions {
    * @default Auto
    */
   readonly runtimeManagementMode?: RuntimeManagementMode;
+
+  /**
+   * Configure the log group of the lambda function
+   *
+   * @default - Use service defaults
+   */
+  readonly logGroupProps?: logs.LogGroupProps;
 }
 
 export interface FunctionProps extends FunctionOptions {
@@ -884,6 +895,14 @@ export class Function extends FunctionBase {
         logRetentionRetryOptions: props.logRetentionRetryOptions as logs.LogRetentionRetryOptions,
       });
       this._logGroup = logs.LogGroup.fromLogGroupArn(this, 'LogGroup', logRetention.logGroupArn);
+    }
+
+    if (props.logGroupProps) {
+      new FunctionLogGroup(this, 'LogGroup', {
+        ...props.logGroupProps,
+        parent: this,
+        logGroupName: `/aws/lambda/${this.functionName}`,
+      });
     }
 
     props.code.bindToResource(resource);
