@@ -1,10 +1,11 @@
 import * as path from 'path';
 import { Construct, IConstruct } from 'constructs';
-import { BaseLogGroupProps, ILogGroup, RetentionDays } from './log-group';
+import { BaseLogGroupProps, ILogGroup } from './log-group';
 import { LogGroupBase } from './log-group-base';
 import * as iam from '../../aws-iam';
 import * as s3_assets from '../../aws-s3-assets';
 import * as cdk from '../../core';
+import { validateLogGroupRetention } from './private/util';
 
 const SERVICE_MANAGED_LOG_GROUP_TYPE = 'Custom::ServiceManagedLogGroup';
 const SERVICE_MANAGED_LOG_GROUP_TAG = 'aws-cdk:service-managed-log-group';
@@ -16,9 +17,15 @@ export interface ServiceManagedLogGroupProps extends BaseLogGroupProps {
   readonly logGroupName: string;
 
   /**
+   * The region where the log group should be created
+   * @default - same region as the stack
+   */
+  readonly logGroupRegion?: string;
+
+  /**
    * The resource owning the log group.
    */
-  readonly parent: IConstruct;
+  readonly parent?: IConstruct;
 
   /**
    * Configuration for tagging the parent resource
@@ -53,10 +60,15 @@ export abstract class ServiceManagedLogGroup extends LogGroupBase implements ILo
   public readonly logGroupArn: string;
   public readonly logGroupName: string;
 
+  /**
+   * Tags for the LogGroup.
+   */
+  public readonly tags: cdk.TagManager = new cdk.TagManager(cdk.TagType.KEY_VALUE, 'AWS::Logs::LogGroup');
+
   constructor(scope: Construct, id: string, props: ServiceManagedLogGroupProps) {
     super(scope, id);
 
-    const retentionInDays = this.validateRetention(props.retention);
+    const retentionInDays = validateLogGroupRetention(props.retention);
 
     this.logGroupName = props.logGroupName;
     this.logGroupArn = cdk.Stack.of(this).formatArn({
@@ -69,9 +81,6 @@ export abstract class ServiceManagedLogGroup extends LogGroupBase implements ILo
     // Custom resource provider
     const provider = this.ensureSingletonProviderFunction(props.tagging);
     // Grant required permissions to the provider function, depending on used features
-    if (props.retention) {
-      provider.grantRetentionPolicy(this.logGroupName);
-    }
     if (props.encryptionKey) {
       provider.grantEncryption(this.logGroupName);
     }
@@ -81,16 +90,21 @@ export abstract class ServiceManagedLogGroup extends LogGroupBase implements ILo
     if (props.removalPolicy === cdk.RemovalPolicy.DESTROY) {
       provider.grantDelete(this.logGroupName);
     }
+    // We don't know ahead of time if tags are going to be set
+    provider.grantTags(this.logGroupName);
 
     const resource = new cdk.CfnResource(this, 'Resource', {
       type: SERVICE_MANAGED_LOG_GROUP_TYPE,
       properties: {
         ServiceToken: provider.functionArn,
+        LogGroupName: props.logGroupName,
+        LogGroupRegion: props.logGroupRegion,
         DataProtectionPolicy: props.dataProtectionPolicy?._bind(this),
         KmsKeyId: props.encryptionKey?.keyArn,
-        LogGroupName: props.logGroupName,
         RetentionInDays: retentionInDays,
+        Tags: this.tags.renderedTags,
         Tagging: props.tagging,
+        RemovalPolicy: props.removalPolicy,
       },
     });
     resource.applyRemovalPolicy(props.removalPolicy);
@@ -99,21 +113,9 @@ export abstract class ServiceManagedLogGroup extends LogGroupBase implements ILo
     // The custom resource will check this tag before delete the log group
     // Because tagging and untagging will ALWAYS happen before the CR is deleted,
     // we can remove the construct, without the deleting the log group  as a side effect.
-    cdk.Tags.of(props.parent).add(SERVICE_MANAGED_LOG_GROUP_TAG, 'true');
-  }
-
-  /**
-   * Validate log retention
-   */
-  private validateRetention(retentionInDays?: RetentionDays) {
-    if (retentionInDays === undefined) { retentionInDays = RetentionDays.TWO_YEARS; }
-    if (retentionInDays === Infinity || retentionInDays === RetentionDays.INFINITE) { retentionInDays = undefined; }
-
-    if (retentionInDays !== undefined && !cdk.Token.isUnresolved(retentionInDays) && retentionInDays <= 0) {
-      throw new Error(`retentionInDays must be positive, got ${retentionInDays}`);
+    if (props.parent) {
+      cdk.Tags.of(props.parent).add(SERVICE_MANAGED_LOG_GROUP_TAG, 'true');
     }
-
-    return retentionInDays;
   }
 
   /**
@@ -121,7 +123,7 @@ export abstract class ServiceManagedLogGroup extends LogGroupBase implements ILo
    * Mimicking the behavior of @aws-cdk/aws-lambda's SingletonFunction to prevent circular dependencies.
    */
   private ensureSingletonProviderFunction(tagging: ServiceManagedLogGroupTaggingConfig) {
-    const functionLogicalId = 'ServiceManagedLogGroupGroup' + 'f0360f7393ea41069d5f706d30f37fa7';
+    const functionLogicalId = 'ServiceManagedLogGroup' + 'f0360f7393ea41069d5f706d30f37fa7';
     const existing = cdk.Stack.of(this).node.tryFindChild(functionLogicalId);
     if (existing) {
       return existing as ServiceManagedLogGroupFunction;
@@ -150,7 +152,7 @@ class ServiceManagedLogGroupFunction extends Construct implements cdk.ITaggable 
     super(scope, id);
 
     const asset = new s3_assets.Asset(this, 'Code', {
-      path: path.join(__dirname, 'log-retention-provider'),
+      path: path.join(__dirname, 'service-managed-log-group-provider'),
     });
 
     const role = new iam.Role(this, 'ServiceRole', {
@@ -209,18 +211,8 @@ class ServiceManagedLogGroupFunction extends Construct implements cdk.ITaggable 
    */
   public grantDataProtectionPolicy(logGroupName: string) {
     this.role.addToPrincipalPolicy(new iam.PolicyStatement({
-      actions: ['logs:PutDataProtectionPolicy', 'DeleteDataProtectionPolicy'],
-      resources: [this.arnFromLogGroupName(logGroupName)],
-    }));
-  }
-
-  /**
-   * @internal
-   */
-  public grantRetentionPolicy(logGroupName: string) {
-    this.role.addToPrincipalPolicy(new iam.PolicyStatement({
-      actions: ['logs:PutRetentionPolicy', 'DeleteRetentionPolicy'],
-      resources: [this.arnFromLogGroupName(logGroupName)],
+      actions: ['logs:PutDataProtectionPolicy', 'logs:DeleteDataProtectionPolicy'],
+      resources: [this.logGroupWithStreamsArnFromName(logGroupName)],
     }));
   }
 
@@ -230,7 +222,21 @@ class ServiceManagedLogGroupFunction extends Construct implements cdk.ITaggable 
   public grantEncryption(logGroupName: string) {
     this.role.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: ['logs:AssociateKmsKey', 'logs:DisassociateKmsKey'],
-      resources: [this.arnFromLogGroupName(logGroupName)],
+      resources: [this.logGroupWithStreamsArnFromName(logGroupName)],
+    }));
+  }
+
+  /**
+   * @internal
+   */
+  public grantTags(logGroupName: string) {
+    this.role.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: [
+        'logs:ListTagsForResource',
+        'logs:TagResource',
+        'logs:UntagResource',
+      ],
+      resources: [this.logGroupArnFromName(logGroupName)],
     }));
   }
 
@@ -240,18 +246,27 @@ class ServiceManagedLogGroupFunction extends Construct implements cdk.ITaggable 
   public grantDelete(logGroupName: string) {
     this.role.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: ['logs:DeleteLogGroup'],
-      resources: [this.arnFromLogGroupName(logGroupName)],
+      resources: [this.logGroupWithStreamsArnFromName(logGroupName)],
     }));
   }
 
   /**
    * Get the ARN for a Log Group name
    */
-  private arnFromLogGroupName(logGroupName: string): string {
+  private logGroupWithStreamsArnFromName(logGroupName: string): string {
     return cdk.Stack.of(this).formatArn({
       service: 'logs',
       resource: 'log-group',
       resourceName: `${logGroupName}:*`,
+      arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+    });
+  }
+
+  private logGroupArnFromName(logGroupName: string): string {
+    return cdk.Stack.of(this).formatArn({
+      service: 'logs',
+      resource: 'log-group',
+      resourceName: `${logGroupName}`,
       arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
     });
   }

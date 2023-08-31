@@ -9,7 +9,8 @@ import { ILogSubscriptionDestination, SubscriptionFilter } from './subscription-
 import * as cloudwatch from '../../aws-cloudwatch';
 import * as iam from '../../aws-iam';
 import * as kms from '../../aws-kms';
-import { ArnFormat, RemovalPolicy, Stack, Token } from '../../core';
+import { ArnFormat, RemovalPolicy, Stack } from '../../core';
+import { validateLogGroupRetention } from './private/util';
 
 export interface ILogGroup extends iam.IResourceWithPolicy {
   /**
@@ -312,13 +313,7 @@ export class LogGroup extends LogGroupBase {
       physicalName: props.logGroupName,
     });
 
-    let retentionInDays = props.retention;
-    if (retentionInDays === undefined) { retentionInDays = RetentionDays.TWO_YEARS; }
-    if (retentionInDays === Infinity || retentionInDays === RetentionDays.INFINITE) { retentionInDays = undefined; }
-
-    if (retentionInDays !== undefined && !Token.isUnresolved(retentionInDays) && retentionInDays <= 0) {
-      throw new Error(`retentionInDays must be positive, got ${retentionInDays}`);
-    }
+    const retentionInDays = validateLogGroupRetention(props.retention);
 
     const resource = new CfnLogGroup(this, 'Resource', {
       kmsKeyId: props.encryptionKey?.keyArn,

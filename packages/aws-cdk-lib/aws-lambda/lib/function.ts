@@ -395,7 +395,7 @@ export interface FunctionOptions extends EventInvokeConfigOptions {
    *
    * @default - Use service defaults
    */
-  readonly logGroupProps?: logs.LogGroupProps;
+  readonly logGroupProps?: logs.BaseLogGroupProps;
 }
 
 export interface FunctionProps extends FunctionOptions {
@@ -691,6 +691,7 @@ export class Function extends FunctionBase {
   public readonly _layers: ILayerVersion[] = [];
 
   private _logGroup?: logs.ILogGroup;
+  private _logGroupProps?: logs.LogGroupProps;
 
   /**
    * Environment variables for this function
@@ -886,7 +887,18 @@ export class Function extends FunctionBase {
       this.addEventSource(event);
     }
 
-    // Log retention
+    // Can use only one log group implementation
+    if (props.logGroupProps && props.logRetention) {
+      throw new Error('Only one of "logGroupProps" or "logRetention" is allowed, but not both. Prefer to use "logGroupProps".');
+    }
+
+    // Log Group
+    this._logGroupProps = props.logGroupProps;
+    if (this._logGroupProps) {
+      this.logGroup;
+    }
+
+    // Log retention @deprecated
     if (props.logRetention) {
       const logRetention = new logs.LogRetention(this, 'LogRetention', {
         logGroupName: `/aws/lambda/${this.functionName}`,
@@ -895,14 +907,6 @@ export class Function extends FunctionBase {
         logRetentionRetryOptions: props.logRetentionRetryOptions as logs.LogRetentionRetryOptions,
       });
       this._logGroup = logs.LogGroup.fromLogGroupArn(this, 'LogGroup', logRetention.logGroupArn);
-    }
-
-    if (props.logGroupProps) {
-      new FunctionLogGroup(this, 'LogGroup', {
-        ...props.logGroupProps,
-        parent: this,
-        logGroupName: `/aws/lambda/${this.functionName}`,
-      });
     }
 
     props.code.bindToResource(resource);
@@ -1119,11 +1123,11 @@ export class Function extends FunctionBase {
    */
   public get logGroup(): logs.ILogGroup {
     if (!this._logGroup) {
-      const logRetention = new logs.LogRetention(this, 'LogRetention', {
+      this._logGroup = new FunctionLogGroup(this, 'LogGroup', {
+        ...this._logGroupProps,
+        parent: this,
         logGroupName: `/aws/lambda/${this.functionName}`,
-        retention: logs.RetentionDays.INFINITE,
       });
-      this._logGroup = logs.LogGroup.fromLogGroupArn(this, `${this.node.id}-LogGroup`, logRetention.logGroupArn);
     }
     return this._logGroup;
   }
