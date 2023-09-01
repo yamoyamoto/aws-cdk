@@ -2,10 +2,10 @@ import * as path from 'path';
 import { Construct, IConstruct } from 'constructs';
 import { BaseLogGroupProps, ILogGroup } from './log-group';
 import { LogGroupBase } from './log-group-base';
+import { validateLogGroupRetention } from './private/util';
 import * as iam from '../../aws-iam';
 import * as s3_assets from '../../aws-s3-assets';
 import * as cdk from '../../core';
-import { validateLogGroupRetention } from './private/util';
 
 const SERVICE_MANAGED_LOG_GROUP_TYPE = 'Custom::ServiceManagedLogGroup';
 const SERVICE_MANAGED_LOG_GROUP_TAG = 'aws-cdk:service-managed-log-group';

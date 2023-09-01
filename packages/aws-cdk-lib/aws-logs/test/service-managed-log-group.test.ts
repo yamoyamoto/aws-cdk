@@ -1,9 +1,9 @@
 import * as path from 'path';
+import { Construct } from 'constructs';
 import { Match, Template } from '../../assertions';
 import * as cdk from '../../core';
 import * as cxapi from '../../cx-api';
 import { ServiceManagedLogGroup, RetentionDays, BaseLogGroupProps, ServiceManagedLogGroupProps } from '../lib';
-import { Construct } from 'constructs';
 
 const FUNCTION_LOGICAL_ID = 'ServiceManagedLogGroup' + 'f0360f7393ea41069d5f706d30f37fa7';
 

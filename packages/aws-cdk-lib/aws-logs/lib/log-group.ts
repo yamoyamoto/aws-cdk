@@ -5,12 +5,12 @@ import { LogStream } from './log-stream';
 import { CfnLogGroup } from './logs.generated';
 import { MetricFilter } from './metric-filter';
 import { IFilterPattern } from './pattern';
+import { validateLogGroupRetention } from './private/util';
 import { ILogSubscriptionDestination, SubscriptionFilter } from './subscription-filter';
 import * as cloudwatch from '../../aws-cloudwatch';
 import * as iam from '../../aws-iam';
 import * as kms from '../../aws-kms';
 import { ArnFormat, RemovalPolicy, Stack } from '../../core';
-import { validateLogGroupRetention } from './private/util';
 
 export interface ILogGroup extends iam.IResourceWithPolicy {
   /**

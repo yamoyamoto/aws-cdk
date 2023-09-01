@@ -1,5 +1,5 @@
-import { RetentionDays } from '../log-group';
 import * as cdk from '../../../core';
+import { RetentionDays } from '../log-group';
 
 /**
    * Validate log retention
